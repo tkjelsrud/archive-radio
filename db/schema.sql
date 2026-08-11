@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS files (
     segmented_at      INTEGER,  -- activity analysis (§7) has run; distinct from indexed_at so a file
                                 -- analyzed-with-zero-segments-found is still visibly "processed", not
                                 -- indistinguishable from "not yet analyzed" (§7's zero-segment rule)
+    blacklisted_at    INTEGER,  -- whole-file exclude (e.g. copyrighted material found) — distinct
+                                -- from segments.rating=-1, which is per-clip "not usable". Every
+                                -- segment from a blacklisted file is excluded from selection
+                                -- regardless of its own rating.
+    blacklist_reason  TEXT,
     created_at        INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 

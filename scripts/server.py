@@ -20,6 +20,11 @@ Endpoints:
   POST   /api/segment/{id}/tags             -> body {name} — add (creates tag if new, source='user')
   DELETE /api/segment/{id}/tags/{tag_name}  -> remove that tag from the segment
   POST   /api/segment/{id}/note             -> body {note}
+  POST   /api/file/{id}/blacklist           -> body {reason} — whole-file exclude (e.g.
+                                                copyrighted material), separate from per-clip
+                                                rating=-1. Airtight: enforced in fresh selection,
+                                                existing session history, and direct clip fetch.
+  DELETE /api/file/{id}/blacklist           -> un-blacklist
 
   GET  /log     -> pipeline processing log + recent git commits (operational visibility)
   GET  /status  -> processed-so-far stats (live from archive.db) alongside real full-archive
@@ -41,6 +46,7 @@ import hashlib
 import html
 import json
 import random
+import re
 import time
 from pathlib import Path
 
@@ -66,14 +72,18 @@ def rng_for(seed, sequence_number):
     return random.Random(int.from_bytes(digest[:8], "big"))
 
 
+SELECTABLE_SEGMENTS = """
+    FROM segments s JOIN files f ON f.id = s.file_id
+    WHERE s.rendered_path IS NOT NULL AND s.rating != -1 AND f.blacklisted_at IS NULL
+"""
+
+
 def pick_segment(conn, seed, sequence_number, previous_file_id):
     rng = rng_for(seed, sequence_number)
 
     file_ids = [
         row["file_id"]
-        for row in conn.execute(
-            "SELECT DISTINCT file_id FROM segments WHERE rendered_path IS NOT NULL AND rating != -1"
-        )
+        for row in conn.execute(f"SELECT DISTINCT s.file_id AS file_id {SELECTABLE_SEGMENTS}")
     ]
     if not file_ids:
         return None
@@ -84,7 +94,7 @@ def pick_segment(conn, seed, sequence_number, previous_file_id):
     segment_ids = [
         row["id"]
         for row in conn.execute(
-            "SELECT id FROM segments WHERE file_id = ? AND rendered_path IS NOT NULL AND rating != -1",
+            f"SELECT s.id AS id {SELECTABLE_SEGMENTS} AND s.file_id = ?",
             (chosen_file_id,),
         )
     ]
@@ -92,23 +102,26 @@ def pick_segment(conn, seed, sequence_number, previous_file_id):
 
 
 def segment_payload(conn, segment_id, sequence_number):
+    """None if the segment doesn't exist OR its file is blacklisted — the
+    latter matters so a session_item recorded before a file was blacklisted
+    can never be replayed after the fact (§ blacklist must be airtight).
+    """
     row = conn.execute(
         """
-        SELECT s.id, s.start_time, s.end_time, s.rendered_duration,
-               f.filename, f.cloud_path, f.path
+        SELECT s.id, s.file_id, s.start_time, s.end_time, s.rendered_duration,
+               f.filename, f.cloud_path, f.path, f.blacklisted_at
         FROM segments s JOIN files f ON f.id = s.file_id
         WHERE s.id = ?
         """,
         (segment_id,),
     ).fetchone()
-    if not row:
+    if not row or row["blacklisted_at"] is not None:
         return None
-    total_available = conn.execute(
-        "SELECT COUNT(*) AS n FROM segments WHERE rendered_path IS NOT NULL AND rating != -1"
-    ).fetchone()["n"]
+    total_available = conn.execute(f"SELECT COUNT(*) AS n {SELECTABLE_SEGMENTS}").fetchone()["n"]
     return {
         "sequence_number": sequence_number,
         "segment_id": row["id"],
+        "file_id": row["file_id"],
         "clip_url": f"/clip/{row['id']}",
         "duration": row["rendered_duration"],
         "source_filename": row["filename"],
@@ -145,6 +158,14 @@ def get_item(session_id: int, sequence_number: int):
         payload = segment_payload(conn, existing["segment_id"], sequence_number)
         if payload:
             return payload
+        # The file backing this historical pick was blacklisted after the
+        # fact — never replay it. Clear the stale pointer and fall through
+        # to generate a fresh one for this position instead.
+        conn.execute(
+            "DELETE FROM session_items WHERE session_id = ? AND sequence_number = ?",
+            (session_id, sequence_number),
+        )
+        conn.commit()
 
     previous = conn.execute(
         "SELECT segment_id FROM session_items WHERE session_id = ? AND sequence_number = ?",
@@ -172,10 +193,22 @@ def get_item(session_id: int, sequence_number: int):
 @app.get("/clip/{segment_id}")
 def get_clip(segment_id: int):
     conn = db.connect()
-    row = conn.execute("SELECT rendered_path FROM segments WHERE id = ?", (segment_id,)).fetchone()
+    row = conn.execute(
+        """
+        SELECT s.rendered_path, f.filename, f.blacklisted_at
+        FROM segments s JOIN files f ON f.id = s.file_id
+        WHERE s.id = ?
+        """,
+        (segment_id,),
+    ).fetchone()
     if not row or not row["rendered_path"]:
         raise HTTPException(404, "no rendered clip for this segment")
-    return FileResponse(row["rendered_path"], media_type="audio/wav")
+    if row["blacklisted_at"] is not None:
+        raise HTTPException(403, "this file is blacklisted")
+    # Content-Disposition filename only matters for a real download (right-click
+    # save / the Clip Detail download link) — fetch()-based playback ignores it.
+    stem = re.sub(r"[^\w.\- ]", "_", Path(row["filename"]).stem) or "clip"
+    return FileResponse(row["rendered_path"], media_type="audio/wav", filename=f"{stem}_seg{segment_id}.wav")
 
 
 def require_segment(conn, segment_id):
@@ -186,7 +219,13 @@ def require_segment(conn, segment_id):
 
 def segment_detail(conn, segment_id):
     row = conn.execute(
-        "SELECT id, touched_at, rating, note FROM segments WHERE id = ?", (segment_id,)
+        """
+        SELECT s.id, s.file_id, s.touched_at, s.rating, s.note,
+               f.blacklisted_at, f.blacklist_reason
+        FROM segments s JOIN files f ON f.id = s.file_id
+        WHERE s.id = ?
+        """,
+        (segment_id,),
     ).fetchone()
     tags = conn.execute(
         """
@@ -199,10 +238,13 @@ def segment_detail(conn, segment_id):
     ).fetchall()
     return {
         "segment_id": row["id"],
+        "file_id": row["file_id"],
         "touched_at": row["touched_at"],
         "rating": row["rating"],
         "note": row["note"],
         "tags": [{"name": t["name"], "source": t["source"]} for t in tags],
+        "file_blacklisted": row["blacklisted_at"] is not None,
+        "blacklist_reason": row["blacklist_reason"],
     }
 
 
@@ -292,6 +334,39 @@ def set_note(segment_id: int, body: NoteBody):
     conn.execute("UPDATE segments SET note = ? WHERE id = ?", (body.note, segment_id))
     conn.commit()
     return segment_detail(conn, segment_id)
+
+
+class BlacklistBody(BaseModel):
+    reason: str = ""
+
+
+def require_file(conn, file_id):
+    row = conn.execute("SELECT id FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such file")
+
+
+@app.post("/api/file/{file_id}/blacklist")
+def blacklist_file(file_id: int, body: BlacklistBody):
+    conn = db.connect()
+    require_file(conn, file_id)
+    conn.execute(
+        "UPDATE files SET blacklisted_at = ?, blacklist_reason = ? WHERE id = ?",
+        (int(time.time()), body.reason or None, file_id),
+    )
+    conn.commit()
+    return {"file_id": file_id, "blacklisted": True, "reason": body.reason or None}
+
+
+@app.delete("/api/file/{file_id}/blacklist")
+def unblacklist_file(file_id: int):
+    conn = db.connect()
+    require_file(conn, file_id)
+    conn.execute(
+        "UPDATE files SET blacklisted_at = NULL, blacklist_reason = NULL WHERE id = ?", (file_id,)
+    )
+    conn.commit()
+    return {"file_id": file_id, "blacklisted": False}
 
 
 NO_CACHE = {"Cache-Control": "no-cache"}

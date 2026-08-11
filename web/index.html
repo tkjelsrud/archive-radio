@@ -27,6 +27,20 @@
     </div>
 
     <div id="status" class="status">Press play</div>
+
+    <button id="btnFx" class="fx-toggle" title="Playback effects">FX</button>
+    <div id="fxPanel" class="fx-panel hidden">
+      <div class="fx-row">
+        <label class="fx-label"><input type="checkbox" id="fxReverbToggle"> Reverb</label>
+        <label class="fx-knob">Wet<input type="range" id="fxReverbWet" min="0" max="1" step="0.01" value="0.35"></label>
+        <label class="fx-knob">Decay<input type="range" id="fxReverbDecay" min="0" max="1" step="0.01" value="0.45"></label>
+      </div>
+      <div class="fx-row">
+        <label class="fx-label"><input type="checkbox" id="fxDelayToggle"> Delay</label>
+        <label class="fx-knob">Wet<input type="range" id="fxDelayWet" min="0" max="1" step="0.01" value="0.35"></label>
+        <label class="fx-knob">Decay<input type="range" id="fxDelayDecay" min="0" max="0.85" step="0.01" value="0.35"></label>
+      </div>
+    </div>
   </div>
 
   <div id="detailOverlay" class="detail-overlay hidden">
@@ -52,8 +66,13 @@
         <textarea id="noteInput" rows="2" placeholder="optional note"></textarea>
       </div>
 
+      <div class="detail-section rating-actions">
+        <button id="btnNotUsable" class="not-usable-btn" title="This one clip only">Not usable</button>
+        <button id="btnBlacklistFile" class="blacklist-btn" title="Excludes every clip from this source file">Blacklist file</button>
+      </div>
+
       <div class="detail-section detail-actions">
-        <button id="btnNotUsable" class="not-usable-btn">Not usable</button>
+        <a id="btnDownloadClip" class="done-btn download-btn" href="#" download title="Download this compiled clip">Download</a>
         <button id="btnDetailDone" class="done-btn">Done</button>
       </div>
     </div>

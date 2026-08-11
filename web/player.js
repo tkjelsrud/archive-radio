@@ -28,8 +28,57 @@ let preload = null;   // { sequenceNumber, promise -> { item, buffer } }
 let rafHandle = null;
 let detailOpen = false; // Clip Detail (§3.5): pauses auto-advance, loops current clip
 
+// Playback effects (optional per the ask — reverb/delay, minimal wet/decay
+// controls only). Every voice connects to `masterBus` instead of straight to
+// destination, so one shared send pair covers both voices during a
+// crossfade. Off by default (wet = 0); the checkboxes are the actual on/off,
+// the sliders only matter once checked.
+let masterBus = null, delaySend = null, delayNode = null, delayFeedback = null;
+let reverbSend = null, convolver = null;
+
+function generateImpulseResponse(context, durationSec, decayPower) {
+  const sampleRate = context.sampleRate;
+  const length = Math.max(1, Math.floor(sampleRate * durationSec));
+  const impulse = context.createBuffer(2, length, sampleRate);
+  for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
+    const data = impulse.getChannelData(channel);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decayPower);
+    }
+  }
+  return impulse;
+}
+
 function ensureContext() {
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx) return ctx;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  masterBus = ctx.createGain();
+  masterBus.gain.value = 1;
+  masterBus.connect(ctx.destination);
+
+  delaySend = ctx.createGain();
+  delaySend.gain.value = 0;
+  delayNode = ctx.createDelay(2.0);
+  delayNode.delayTime.value = 0.35;
+  delayFeedback = ctx.createGain();
+  delayFeedback.gain.value = 0;
+  masterBus.connect(delaySend);
+  delaySend.connect(delayNode);
+  delayNode.connect(delayFeedback);
+  delayFeedback.connect(delayNode); // feedback loop = the echoes
+  delayNode.connect(ctx.destination);
+
+  reverbSend = ctx.createGain();
+  reverbSend.gain.value = 0;
+  convolver = ctx.createConvolver();
+  convolver.buffer = generateImpulseResponse(ctx, 2.0, 2);
+  masterBus.connect(reverbSend);
+  reverbSend.connect(convolver);
+  convolver.connect(ctx.destination);
+
+  applyReverbSettings();
+  applyDelaySettings();
   return ctx;
 }
 
@@ -104,7 +153,7 @@ function drawWaveform(buffer) {
 function makeVoice(buffer, item, startGain) {
   const gain = ensureContext().createGain();
   gain.gain.value = startGain;
-  gain.connect(ctx.destination);
+  gain.connect(masterBus);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(gain);
@@ -272,9 +321,12 @@ const tagInputEl = document.getElementById('tagInput');
 const tagSuggestionsEl = document.getElementById('tagSuggestions');
 const noteInputEl = document.getElementById('noteInput');
 const btnNotUsable = document.getElementById('btnNotUsable');
+const btnBlacklistFile = document.getElementById('btnBlacklistFile');
 const btnDetailDone = document.getElementById('btnDetailDone');
+const btnDownloadClip = document.getElementById('btnDownloadClip');
 
 let detailSegmentId = null;
+let detailFileId = null;
 
 function renderTagChips(tags) {
   tagChipsEl.innerHTML = '';
@@ -313,10 +365,13 @@ async function openDetail() {
   detailOpen = true;
   current.source.loop = true;
   detailSegmentId = current.item.segment_id;
+  detailFileId = current.item.file_id;
 
   detailFilenameEl.textContent = current.item.source_filename;
   tagInputEl.value = '';
   noteInputEl.value = '';
+  btnDownloadClip.href = current.item.clip_url;
+  btnDownloadClip.download = `${current.item.source_filename.replace(/\.[^.]+$/, '')}_seg${detailSegmentId}.wav`;
   refreshTagSuggestions();
 
   const detail = await (await fetch(`/api/segment/${detailSegmentId}/touch`, { method: 'POST' })).json();
@@ -324,6 +379,8 @@ async function openDetail() {
   noteInputEl.value = detail.note || '';
   btnNotUsable.classList.toggle('active', detail.rating === -1);
   btnNotUsable.textContent = detail.rating === -1 ? 'Marked not usable' : 'Not usable';
+  btnBlacklistFile.classList.toggle('active', detail.file_blacklisted);
+  btnBlacklistFile.textContent = detail.file_blacklisted ? 'File blacklisted' : 'Blacklist file';
 
   detailOverlay.classList.remove('hidden');
 }
@@ -371,4 +428,65 @@ btnNotUsable.addEventListener('click', async () => {
   })).json();
   btnNotUsable.classList.toggle('active', detail.rating === -1);
   btnNotUsable.textContent = detail.rating === -1 ? 'Marked not usable' : 'Not usable';
+});
+
+// --- Playback effects (optional, minimal): a toggle + wet + decay per
+// effect. Sliders work immediately even before playback has started —
+// ensureContext() applies current settings the moment the graph exists;
+// before that these handlers just fall through the null guards.
+
+const btnFx = document.getElementById('btnFx');
+const fxPanel = document.getElementById('fxPanel');
+const fxReverbToggle = document.getElementById('fxReverbToggle');
+const fxReverbWet = document.getElementById('fxReverbWet');
+const fxReverbDecay = document.getElementById('fxReverbDecay');
+const fxDelayToggle = document.getElementById('fxDelayToggle');
+const fxDelayWet = document.getElementById('fxDelayWet');
+const fxDelayDecay = document.getElementById('fxDelayDecay');
+
+btnFx.addEventListener('click', () => fxPanel.classList.toggle('hidden'));
+
+function applyReverbSettings() {
+  if (!reverbSend) return;
+  reverbSend.gain.value = fxReverbToggle.checked ? parseFloat(fxReverbWet.value) : 0;
+}
+
+function applyReverbDecay() {
+  if (!convolver || !ctx) return;
+  const decay = parseFloat(fxReverbDecay.value);
+  convolver.buffer = generateImpulseResponse(ctx, 0.5 + decay * 3.5, 2);
+}
+
+function applyDelaySettings() {
+  if (!delaySend) return;
+  const on = fxDelayToggle.checked;
+  delaySend.gain.value = on ? parseFloat(fxDelayWet.value) : 0;
+  delayFeedback.gain.value = on ? parseFloat(fxDelayDecay.value) : 0;
+}
+
+fxReverbToggle.addEventListener('change', applyReverbSettings);
+fxReverbWet.addEventListener('input', applyReverbSettings);
+fxReverbDecay.addEventListener('input', () => { applyReverbDecay(); applyReverbSettings(); });
+fxDelayToggle.addEventListener('change', applyDelaySettings);
+fxDelayWet.addEventListener('input', applyDelaySettings);
+fxDelayDecay.addEventListener('input', applyDelaySettings);
+
+btnBlacklistFile.addEventListener('click', async () => {
+  const currentlyBlacklisted = btnBlacklistFile.classList.contains('active');
+  if (!currentlyBlacklisted) {
+    const reason = window.prompt('Blacklist this entire source file — why? (optional)', '') || '';
+    if (reason === null) return; // user cancelled the prompt
+    const detail = await (await fetch(`/api/file/${detailFileId}/blacklist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    })).json();
+    btnBlacklistFile.classList.toggle('active', detail.blacklisted);
+    btnBlacklistFile.textContent = detail.blacklisted ? 'File blacklisted' : 'Blacklist file';
+  } else {
+    if (!window.confirm('Remove this file from the blacklist?')) return;
+    const detail = await (await fetch(`/api/file/${detailFileId}/blacklist`, { method: 'DELETE' })).json();
+    btnBlacklistFile.classList.toggle('active', detail.blacklisted);
+    btnBlacklistFile.textContent = detail.blacklisted ? 'File blacklisted' : 'Blacklist file';
+  }
 });

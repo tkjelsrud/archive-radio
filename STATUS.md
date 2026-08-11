@@ -25,18 +25,25 @@ server.py                          (FastAPI web player)
 Web player is live at `http://ost.local:8420/`:
 
 - `/` — the radio (play/pause, skip back/ahead, keyboard shortcuts space+arrows,
-  Web Audio crossfade between clips, Clip Detail overlay — click the art
-  box to loop/tag/rate the current clip)
+  Web Audio crossfade between clips, waveform drawn per-clip, Clip Detail
+  overlay — click the art box to loop/tag/rate/blacklist/**download** the
+  current clip, and a global **FX panel** (reverb/delay, toggle + wet + decay
+  each) applied to the whole playback chain, not per-clip)
 - `/log` — pipeline processing log + recent git commits
 - `/status` — real live numbers (processed so far vs. actual full-archive
   totals) — never fabricated/projected figures
 
-**Processed so far:** years 2015, 2016, 2017. 777 source files -> 1152
-segments -> 1152 rendered clips. Local staging for these years has been
-**deleted** (source WAVs reclaimed, ~10.5GB freed) — DB rows, segments, and
-rendered clips are untouched and fully playable; only the raw local copy is
-gone. Re-fetching from Jottacloud is possible later if ever needed, but
-that's not the expectation — the goal is to not re-download processed years.
+**Processed so far:** years 2015-2019 plus the no-year anomalous batch (45
+folders). 3,208 files in the DB -> 5,429 segments -> 5,429 rendered clips, 0
+pending render. Local staging for 2015-2017 was deleted early on to reclaim
+disk (~10.5GB) — this later caused a real data-loss incident (777 files lost
+their local copy *after* an unrelated padding/coverage reprocess needed to
+re-decode from a source that no longer existed; see "Real bugs" below). 749
+of those 777 were re-fetched from Jottacloud; **28 files are permanently
+gone** (missing locally *and* from Jottacloud) and will always show as
+analyze errors — this is expected, not a regression. Lesson applied: don't
+delete local staging for a year until it's fully done reprocessing, not just
+first-rendered.
 
 **Full archive** (measured via `scripts/archive_stats.py`, cached in
 `logs/archive_totals.json`): 37,891 files / 243.02 GiB total, of which
@@ -82,10 +89,11 @@ that's not the expectation — the goal is to not re-download processed years.
 | jotta_sync.py | `--min-size` | 100,000 bytes | pre-download size filter |
 | analyze.py | `--threshold` | 0.01 RMS (~-40dB) | activity threshold |
 | analyze.py | `--merge-gap` | 1.5s | merge active runs closer than this |
-| analyze.py | `--pad-before` / `--pad-after` | 1.0s / 2.0s | padding around detected regions |
-| analyze.py | `--seconds-per-clip` | 60s | ~1 clip per this many seconds of a long region |
+| analyze.py | `--pad-before` / `--pad-after` | 0.3s / 2.0s | padding around detected regions (pad-before reduced from 1.0s per listening feedback) |
+| analyze.py | `--target-coverage` | 0.35 | fraction of a long region's duration covered by its windows (replaced the old fixed seconds-per-clip formula) |
 | analyze.py | `--max-clips-per-segment` | 10 | hard ceiling regardless of region length (§16 fairness) |
 | analyze.py / render.py | `--workers` | 3 | concurrent ffmpeg subprocesses (conservative on a 4-core box) |
+| backup_db.py | `--tag` / `--keep` | none / 30 | label a backup, prune to the N most recent (§ below) |
 
 ## Real bugs found running this against actual data (worth knowing, not rediscovering)
 
@@ -119,19 +127,48 @@ that's not the expectation — the goal is to not re-download processed years.
 - Browser cache served a stale `player.js` after a rewrite (it referenced a
   removed `<audio>` element) — added `Cache-Control: no-cache` on
   `/`, `/style.css`, `/player.js` since these get iterated on a lot.
+- **Data-loss incident**: an ad-hoc `DELETE FROM segments` run directly via
+  the `sqlite3` CLI (no backup) during a schema/reprocess pass destroyed
+  real curation data (`touched_at`/`rating`/`note`) for a handful of
+  segments. Nothing recovered these — they're gone. This is why
+  `scripts/backup_db.py` exists now; see the section below.
+- **777-file 2015-2017 total data loss**: an earlier disk-cleanup pass
+  (§ above) deleted local staging for 2015-2017 right after first render.
+  A later reprocess (triggered by the pad/coverage/normalization fixes)
+  reset `segmented_at` for everything and needed to re-decode from that
+  now-missing source — all 777 files failed with an ffmpeg "No such file
+  or directory" error. Fixed by `scripts/refetch_missing.py` (re-downloads
+  from Jottacloud back to each row's original local `path`, using
+  `cloud_path` which was never touched) — recovered 749/777; the remaining
+  28 are gone from Jottacloud too, permanently unrecoverable.
+- **`scan.py --dir` is a required argument** — chaining
+  `scan.py && analyze.py && render.py` blindly without it fails scan.py
+  immediately with a usage error, but analyze.py/render.py still run
+  "successfully" against whatever was already scanned, silently skipping
+  every newly-downloaded file for that batch. Always check a chained
+  script's actual output, not just its exit code / "done" marker.
+
+## Curation-data safety net
+
+`scripts/backup_db.py` — full SQLite backup via the `sqlite3.Connection.backup()`
+API (WAL-safe, no locking races with the live server or pipeline scripts).
+Writes to `backups/archive_<timestamp>[_<tag>].db`, prints a curation-data
+summary (segments touched/rated/noted, user tag count) so it's obvious the
+backup actually captured something, and prunes to the `--keep` most recent
+(default 30).
+
+**Rule going forward: run this before any manual operation that touches the
+`segments` or `files` tables** — a `DELETE`/`TRUNCATE` via the `sqlite3` CLI,
+a schema migration, a full re-analyze that resets `segmented_at`. This is a
+direct response to the two incidents above; it does not run automatically
+(nothing currently *triggers* a destructive op on its own), so it only helps
+if it's actually run first.
 
 ## Deliberately not done yet
 
 - **Favorites Pad UI** (§3.4) — touching a clip already marks it
   favorited server-side (`touched_at` + not rating=-1), but there's no
   screen to browse/trigger touched clips yet.
-- **Waveform display** — canvas element is scaffolded in `index.html`
-  (`#waveform`), CSS positions it correctly, but the actual drawing logic
-  (decode `AudioBuffer.getChannelData()`, downsample to min/max per pixel
-  column) isn't written. Should be cheap since the buffer's already
-  decoded client-side for playback.
-- **Effects/ambient mode** (§3.6) — reverb/delay via Web Audio, client-side
-  only, not started.
 - **Curated Radio mode** (§3.6/§26) — random selection restricted to
   touched-and-not-excluded clips only.
 - **"Open Source" as a real action** — the source path is displayed as
@@ -142,7 +179,9 @@ that's not the expectation — the goal is to not re-download processed years.
   cleanup was done manually (SQL query + `rm`) this session. The logic is
   simple enough to script now that it's been done once by hand: given a
   year (or an explicit path list), delete local files whose `segments` are
-  all rendered, leave DB rows alone.
+  all rendered, leave DB rows alone. Given the 777-file incident above,
+  this script should call `backup_db.py` first and should probably refuse
+  to run against a year whose reprocessing isn't fully settled.
 - **`ANALYSIS_VERSION` in `analyze.py` is defined but never actually
   checked** — resumability there is purely `segmented_at IS NULL`. Bumping
   the constant currently does nothing; `scan.py`'s equivalent is wired up
@@ -150,23 +189,20 @@ that's not the expectation — the goal is to not re-download processed years.
 - Auto-tagging (BPM/tempo/key, bass-heaviness, transient sharpness) —
   discussed and explicitly deferred, low confidence without real research
   time (see conversation history / DESIGN.md §8 discussion).
-- Remote access — discussed; recommendation was a VPN (e.g. Tailscale) back
-  into the LAN rather than port-forwarding 8420 directly, since there's
-  currently zero auth on the API. Not set up.
 
 ## Next batch candidates
 
-- Any year not yet processed (everything except 2015-2017) — `jotta_sync.py
-  --year YYYY --execute` per the usual flow. 2018-2026 all still fully
-  untouched in the cloud archive.
+- **2020-2026** — everything through 2019 (plus the no-year batch) is done;
+  `jotta_sync.py --year YYYY --execute` per the usual flow, remembering
+  `scan.py --dir jottacloud-staging` needs its `--dir` flag explicitly.
+- The no-year batch's 45 folders are now handled: synced via `--no-year`,
+  and the "Old samples" stock-sample folder was truncated (4,430 non-`P-*`
+  files deleted from DB+disk, real copyrighted/stock content) while `P-*`
+  subfolders (personal MPC1000 CF-card projects, mixed in with stock kicks/
+  snares) were deliberately left alone — extracting the personal bits from
+  those is still an open question, not started.
 - **4,247 `.aif` files (34.08 GiB) + 1 `.aiff`** exist archive-wide — already
-  supported by the extension filter, just not yet encountered since
-  2015-2017 happened to be all-WAV. Ableton (which defaults to AIFF on Mac)
-  usage looks concentrated in 2023+ based on "Ableton Project Info" folders
-  seen during the full-tree scan.
-- **45 top-level folders have no usable year prefix** (numbered project
-  folders like `000 Drones`, sample libraries like `Found Samples`/`Old
-  samples`/`Zebra 2 Patches`, a few typos like `2926-6 Camera Angle`) — these
-  are reported by `jotta_sync.py` every run but need manual handling
-  (renaming in Jottacloud, or a dedicated non-year batch mode) since the
-  batching logic is purely year-prefix-based.
+  supported by the extension filter; 2015-2019 turned out to include some
+  (via `Samples/Recorded` subfolders), but the bulk is still ahead. Ableton
+  (which defaults to AIFF on Mac) usage looks concentrated in 2023+ based on
+  "Ableton Project Info" folders seen during the full-tree scan.
