@@ -17,6 +17,9 @@ const btnPrev = document.getElementById('btnPrev');
 const statusEl = document.getElementById('status');
 const filenameEl = document.getElementById('sourceFilename');
 const locationEl = document.getElementById('sourceLocation');
+const waveformCanvas = document.getElementById('waveform');
+const waveformCtx = waveformCanvas.getContext('2d');
+const artPlaceholderEl = document.getElementById('artPlaceholder');
 
 let ctx = null;
 let sessionId = null;
@@ -61,6 +64,43 @@ function updateMeta(item) {
   statusEl.textContent = `${item.sequence_number + 1}/${item.total_available}`;
 }
 
+// Approximate waveform (DESIGN.md §13's "even if just an option" ask): the
+// full clip is already decoded client-side for playback, so this is just
+// reading the raw samples once and drawing min/max per pixel column — no
+// extra fetch, no backend involvement, no scrolling playhead for v1.
+function drawWaveform(buffer) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = waveformCanvas.clientWidth || 220;
+  const cssHeight = waveformCanvas.clientHeight || 220;
+  waveformCanvas.width = cssWidth * dpr;
+  waveformCanvas.height = cssHeight * dpr;
+  waveformCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  waveformCtx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const data = buffer.getChannelData(0);
+  const columns = Math.max(1, Math.floor(cssWidth));
+  const samplesPerColumn = Math.max(1, Math.floor(data.length / columns));
+  const midY = cssHeight / 2;
+
+  waveformCtx.strokeStyle = '#4a9';
+  waveformCtx.lineWidth = 1;
+  waveformCtx.beginPath();
+  for (let col = 0; col < columns; col++) {
+    const start = col * samplesPerColumn;
+    let min = 0, max = 0;
+    for (let i = 0; i < samplesPerColumn; i++) {
+      const v = data[start + i] || 0;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    waveformCtx.moveTo(col + 0.5, midY - max * midY * 0.9);
+    waveformCtx.lineTo(col + 0.5, midY - min * midY * 0.9);
+  }
+  waveformCtx.stroke();
+
+  artPlaceholderEl.style.display = 'none';
+}
+
 function makeVoice(buffer, item, startGain) {
   const gain = ensureContext().createGain();
   gain.gain.value = startGain;
@@ -89,6 +129,7 @@ function playFresh(voice, fadeInSec) {
   voice.source.start(now);
   voice.startTime = now;
   updateMeta(voice.item);
+  drawWaveform(voice.buffer);
 }
 
 async function loadAndPlay(seq, fadeInSec) {
@@ -152,6 +193,7 @@ async function crossfadeToNext() {
 
   current = incoming;
   updateMeta(incoming.item);
+  drawWaveform(incoming.buffer);
   startPreload(incoming.item.sequence_number + 1);
 }
 
