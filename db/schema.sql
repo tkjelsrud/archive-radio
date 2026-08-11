@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS files (
     sample_rate       INTEGER,
     channels          INTEGER,
     bit_depth         INTEGER,
+    source_tag        TEXT,     -- embedded encoded_by/software tag, e.g. "REAPER" (may be absent even for Reaper files — not fully reliable alone)
+    content_kind      TEXT CHECK (content_kind IN ('raw_take', 'render_or_mix')),  -- best-effort, from filename shape only; NULL when ambiguous. Deliberately no stock-sample/field-recording value yet — no reliable signature found for those (see DESIGN.md discussion)
     analysis_version  INTEGER,
     source            TEXT NOT NULL CHECK (source IN ('local', 'jottacloud')),
     cloud_path        TEXT,
