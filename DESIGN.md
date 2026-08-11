@@ -931,22 +931,29 @@ The application's job is simply to make that history audible again.
 
 The first usable version is complete when the following works:
 
-- [ ] Point scanner at a directory tree.
-- [ ] Find WAV and AIFF files recursively, skipping already-indexed paths.
-- [ ] Extract metadata.
-- [ ] Detect near-silent vs. active audio regions.
-- [ ] Render each active segment to a compiled mono clip (§8a).
-- [ ] Store segments (with compiled clip path) in SQLite.
-- [ ] Pause and resume a scan without redoing finished files.
-- [ ] Start a local web server (LAN-only).
-- [ ] Select a random active segment.
-- [ ] Play its compiled clip in the browser.
-- [ ] Automatically select the next segment.
-- [ ] Skip to another segment with Next.
-- [ ] Remember/bookmark the current segment.
-- [ ] View remembered segments.
-- [ ] Link each remembered segment back to its source file.
-- [ ] Use a deterministic random seed.
+- [x] Point scanner at a directory tree.
+- [x] Find WAV and AIFF files recursively, skipping already-indexed paths.
+- [x] Extract metadata.
+- [x] Detect near-silent vs. active audio regions.
+- [x] Render each active segment to a compiled mono clip (§8a).
+- [x] Store segments (with compiled clip path) in SQLite.
+- [x] Pause and resume a scan without redoing finished files.
+- [x] Start a local web server (LAN-only).
+- [x] Select a random active segment.
+- [x] Play its compiled clip in the browser.
+- [x] Automatically select the next segment.
+- [x] Skip to another segment with Next.
+- [x] Remember/bookmark the current segment — implemented as "touch" (§3.5):
+      opening Clip Detail marks it favorited by default, no separate Remember
+      button. Equivalent capability, different interaction than originally written here.
+- [ ] View remembered segments — not built yet; see STATUS.md's "Favorites Pad UI".
+- [~] Link each remembered segment back to its source file — the source
+      path is shown as text in the player; not yet a click-to-open action.
+- [x] Use a deterministic random seed — seeded server-side (§17); no UI to
+      view/set the seed yet (see STATUS.md).
+
+Verified against real data: see STATUS.md for current processed counts and
+what's still open.
 
 Everything beyond this is optional.
 
