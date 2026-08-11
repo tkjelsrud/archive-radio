@@ -234,19 +234,22 @@ def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_a
 
 
 def year_for_file(row):
-    """Batch year from cloud_path for Jottacloud files (known at ingestion,
-    not dependent on cloud-reported mtime fidelity — see §5a discussion);
-    falls back to modified_time's year for local files. None if neither
-    is available.
+    """The file's own modified_time year — its actual creation/last-touched
+    date, not which project folder it ended up in. Verified against real
+    data: a sample/stem can be reused in a later project (e.g. a file
+    physically dated 2016-01 sitting inside a "2017q2..." folder), and the
+    real date is what's actually useful, not the folder it was later
+    incorporated into. Falls back to the cloud project-folder year (§5a)
+    only if modified_time is missing entirely.
     """
+    if row["modified_time"]:
+        return datetime.datetime.fromtimestamp(row["modified_time"], tz=datetime.timezone.utc).year
     if row["source"] == "jottacloud" and row["cloud_path"]:
         match = CLOUD_PROJECT_RE.search(row["cloud_path"])
         if match:
             year = extract_year(match.group(1))
             if year:
                 return year
-    if row["modified_time"]:
-        return datetime.datetime.fromtimestamp(row["modified_time"], tz=datetime.timezone.utc).year
     return None
 
 

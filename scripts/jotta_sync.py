@@ -128,9 +128,17 @@ def find_batch_folders(target_years):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--year", type=int, action="append", required=True, dest="years",
+    batch_group = parser.add_mutually_exclusive_group(required=True)
+    batch_group.add_argument(
+        "--year", type=int, action="append", dest="years",
         help="Year to include in this batch. Repeatable, e.g. --year 2014 --year 2015.",
+    )
+    batch_group.add_argument(
+        "--no-year", action="store_true",
+        help="Batch every top-level folder with no plausible year prefix instead of a year "
+             "(the numbered project folders, sample libraries, typos, etc. — §5a's "
+             "'unmatched, reported' set). Auto-tagging now uses each file's own "
+             "modified_time, not the folder name, so these don't need a year to be useful.",
     )
     parser.add_argument(
         "--min-size", type=int, default=DEFAULT_MIN_SIZE,
@@ -154,24 +162,32 @@ def main():
     )
     args = parser.parse_args()
 
-    target_years = set(args.years)
-    print(f"Batch years: {sorted(target_years)}")
+    target_years = set(args.years) if args.years else set()
+    print(f"Batch: {'no-year folders' if args.no_year else sorted(target_years)}")
     print(f"Min size: {args.min_size:,} bytes")
     print(f"Mode: {'DRY RUN (listing only)' if args.dry_run else 'EXECUTE (will download)'}")
     print()
 
-    matched_folders, other_year_folders, anomalous_folders = find_batch_folders(target_years)
+    all_matched, other_year_folders, anomalous_folders = find_batch_folders(target_years)
+    matched_folders = anomalous_folders if args.no_year else all_matched
 
-    print(f"Matched {len(matched_folders)} project folder(s) for {sorted(target_years)}:")
-    for f in matched_folders:
-        print(f"  - {f['Name']}")
-    print()
-    print(f"{len(other_year_folders)} folder(s) belong to other years — not an anomaly, just not this batch.")
-    print()
-    print(f"{len(anomalous_folders)} folder(s) have no plausible year prefix at all "
-          f"(no year, or outside {PLAUSIBLE_YEAR_RANGE}) — these need manual handling later:")
-    for f in anomalous_folders:
-        print(f"  ? {f['Name']}")
+    if args.no_year:
+        print(f"Batching {len(matched_folders)} no-year folder(s):")
+        for f in matched_folders:
+            print(f"  - {f['Name']}")
+        print()
+        print(f"{len(other_year_folders)} folder(s) belong to a year and are not part of this batch.")
+    else:
+        print(f"Matched {len(matched_folders)} project folder(s) for {sorted(target_years)}:")
+        for f in matched_folders:
+            print(f"  - {f['Name']}")
+        print()
+        print(f"{len(other_year_folders)} folder(s) belong to other years — not an anomaly, just not this batch.")
+        print()
+        print(f"{len(anomalous_folders)} folder(s) have no plausible year prefix at all "
+              f"(no year, or outside {PLAUSIBLE_YEAR_RANGE}) — run with --no-year to batch these:")
+        for f in anomalous_folders:
+            print(f"  ? {f['Name']}")
     print()
 
     conn = db.init_db(args.db)
