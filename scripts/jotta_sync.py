@@ -127,6 +127,12 @@ def find_batch_folders(target_years):
 
 
 def main():
+    # Python block-buffers stdout when it's not a terminal (i.e. every time
+    # this is redirected to a log file) — nothing shows up until the process
+    # exits otherwise, which makes a long-running batch look stuck even
+    # when it's fine. Line-buffer explicitly so progress is visible live.
+    sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(description=__doc__)
     batch_group = parser.add_mutually_exclusive_group(required=True)
     batch_group.add_argument(
@@ -246,7 +252,8 @@ def main():
     # exist yet when this call returns. Don't touch the filesystem yet.
     print(f"\nQueuing {len(to_download)} download(s) into {dest_root}/ (flat, hashed names) ...")
     pending = {}  # cloud path -> (tmp_dir, entry)
-    for entry in to_download:
+    queue_started = time.monotonic()
+    for i, entry in enumerate(to_download):
         local_name = local_filename_for(entry["Path"])
         tmp_dir = dest_root / ".incoming" / local_name
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -260,13 +267,23 @@ def main():
             continue
         pending[entry["Path"]] = (tmp_dir, entry)
 
+        if (i + 1) % 100 == 0 or (i + 1) == len(to_download):
+            elapsed = time.monotonic() - queue_started
+            print(f"  ...queued {i + 1}/{len(to_download)} ({elapsed:.0f}s elapsed)")
+
     # Phase 2: poll until every queued download has actually finished.
     # Deadline scales with batch size — a fixed 10 minutes is fine for
     # dozens of files but not thousands (found the hard way: a 5,807-file
     # batch needs much longer than a 68-file one).
     print(f"Waiting for {len(pending)} download(s) to finish ...")
+    total_pending = len(pending)
     deadline = time.monotonic() + max(600, len(pending) * 3)
+    last_progress_print = time.monotonic()
     while pending and time.monotonic() < deadline:
+        if time.monotonic() - last_progress_print > 15:
+            done_so_far = total_pending - len(pending)
+            print(f"  ...{done_so_far}/{total_pending} finalized, {len(pending)} still in flight")
+            last_progress_print = time.monotonic()
         result = subprocess.run(
             ["jotta-cli", "list", "downloads", "--json"],
             capture_output=True, text=True,
