@@ -9,10 +9,17 @@ source file_id so one flat directory doesn't end up with hundreds of
 thousands of files. This compiled clip — never the original — is what the
 player actually streams.
 
+Also applies a gentle, clamped RMS-based gain correction (see
+gain_db_for()) — real listening feedback was that raw levels varied too
+much between clips. Not full loudness normalization: outliers are pulled
+partway toward a target, not flattened, so the archive's real dynamic
+range (a quiet ambient recording vs. a loud drum take) isn't erased.
+
 Resumable: a segment with rendered_path already set is skipped.
 """
 
 import argparse
+import math
 import subprocess
 import sys
 import time
@@ -25,13 +32,31 @@ CLIP_SAMPLE_RATE = 22050
 MAX_CLIP_SECONDS = 10.0
 DEFAULT_WORKERS = 3  # conservative start on a small 4-core box running other services too
 
+# Gentle, clamped RMS-based gain correction — not full loudness normalization.
+# Real distribution across 1152 segments: mean_rms ranged 0.0075-0.52 (~37dB
+# spread), median 0.059. Pulling outliers partway toward a target evens out
+# the "constantly reaching for the volume knob" feeling from real listening
+# without flattening the archive's natural dynamic variation — a genuinely
+# quiet ambient recording should stay quieter than a loud drum take, just
+# not by 30+dB.
+TARGET_RMS = 0.07
+MAX_GAIN_ADJUST_DB = 9.0
 
-def render_clip(source_path, start_time, duration, dest_path):
+
+def gain_db_for(mean_rms):
+    if not mean_rms or mean_rms <= 0:
+        return 0.0
+    gain_db = 20 * math.log10(TARGET_RMS / mean_rms)
+    return max(-MAX_GAIN_ADJUST_DB, min(MAX_GAIN_ADJUST_DB, gain_db))
+
+
+def render_clip(source_path, start_time, duration, dest_path, gain_db):
     clip_duration = min(duration, MAX_CLIP_SECONDS)
     result = subprocess.run(
         [
             "ffmpeg", "-v", "error", "-y",
             "-ss", str(start_time), "-t", str(clip_duration), "-i", str(source_path),
+            "-af", f"volume={gain_db:.2f}dB",
             "-ac", "1", "-ar", str(CLIP_SAMPLE_RATE), "-sample_fmt", "s16",
             str(dest_path),
         ],
@@ -47,7 +72,8 @@ def render_one(row, cache_root):
     shard_dir = cache_root / str(row["file_id"])
     shard_dir.mkdir(parents=True, exist_ok=True)
     dest_path = shard_dir / f"{row['segment_id']}.wav"
-    clip_duration, error = render_clip(row["source_path"], row["start_time"], row["duration"], dest_path)
+    gain_db = gain_db_for(row["mean_rms"])
+    clip_duration, error = render_clip(row["source_path"], row["start_time"], row["duration"], dest_path, gain_db)
     return dest_path, clip_duration, error
 
 
@@ -62,7 +88,8 @@ def main():
     conn = db.init_db(args.db)
     rows = conn.execute(
         """
-        SELECT s.id AS segment_id, s.file_id, s.start_time, s.duration, f.path AS source_path
+        SELECT s.id AS segment_id, s.file_id, s.start_time, s.duration, s.mean_rms,
+               f.path AS source_path
         FROM segments s
         JOIN files f ON f.id = s.file_id
         WHERE s.rendered_path IS NULL

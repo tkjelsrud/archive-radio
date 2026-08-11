@@ -179,10 +179,15 @@ async function crossfadeToNext() {
     : await fetchAndDecode(nextSeq);
   if (!data) return; // nothing to advance to yet — let the outgoing clip just finish
 
+  // The smooth-transition feeling comes from the OUTGOING clip fading out —
+  // the incoming one doesn't need a slow ramp too. A full fadeSec fade-in
+  // made every clip start quiet regardless of its actual content; a short
+  // declick fade avoids a click without adding an artificial quiet start.
   const incoming = makeVoice(data.buffer, data.item, 0);
   const now = ctx.currentTime;
+  const fadeInSec = Math.min(SKIP_FADE_SEC, fadeSec);
   incoming.gain.gain.setValueAtTime(0, now);
-  incoming.gain.gain.linearRampToValueAtTime(1, now + fadeSec);
+  incoming.gain.gain.linearRampToValueAtTime(1, now + fadeInSec);
   incoming.source.start(now);
   incoming.startTime = now;
 

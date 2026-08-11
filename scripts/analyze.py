@@ -9,13 +9,13 @@ it, threshold it, merge nearby active runs, drop very-short ones (with a
 per-file dynamic minimum, §9, so short one-shots aren't rejected), pad
 the survivors, and merge any overlaps padding created. A region no
 longer than one compiled clip (10s) becomes one segment row; a longer
-one (a long continuous take) is split into multiple clip-length windows
-spread across it — roughly one per --seconds-per-clip, capped at
---max-clips-per-segment regardless of how long the take actually is, so
-one long recording can't dominate random selection (§16) the way it
-would if it produced hundreds of windows. A file with zero surviving
-segments still gets segmented_at set (§7) — it's "processed, nothing
-found", not indistinguishable from "not yet analyzed".
+one (a long continuous take) is split into enough clip-length windows to
+cover roughly --target-coverage of its length, spread evenly across it,
+capped at --max-clips-per-segment regardless of how long the take
+actually is, so one long recording can't dominate random selection (§16)
+the way it would if it produced hundreds of windows. A file with zero
+surviving segments still gets segmented_at set (§7) — it's "processed,
+nothing found", not indistinguishable from "not yet analyzed".
 
 No numpy dependency (not installed on the target server, and the
 workload's small enough that pure-Python + the stdlib `array` module is
@@ -48,10 +48,16 @@ WINDOW_MS = 200
 DEFAULT_ACTIVITY_THRESHOLD = 0.01  # RMS, ~-40dB, on samples normalized to [-1, 1]
 DEFAULT_MERGE_GAP = 1.5  # seconds; §9 default range is 1-2s
 DEFAULT_MIN_SEGMENT = 3.0  # seconds; §9 default, clamped per-file to file duration
-DEFAULT_PAD_BEFORE = 1.0
+DEFAULT_PAD_BEFORE = 0.3  # was 1.0s — a full second of near-silent lead-in made some
+                          # clips feel like they "start with no audio" (real listening feedback)
 DEFAULT_PAD_AFTER = 2.0
 MAX_CLIP_SECONDS = 10.0  # §8a — each rendered clip is at most this long
-DEFAULT_SECONDS_PER_CLIP = 60.0  # one ~10s clip per this many seconds of a long active region
+DEFAULT_TARGET_COVERAGE = 0.35  # aim to cover at least ~35% of a long region across its windows.
+                                 # Replaced a "one clip per N seconds" formula that was a step
+                                 # function: ceil(duration/60) computes to 1 for ANYTHING under
+                                 # 60s, so a 59s region got treated identically to a 12s one —
+                                 # only its first 10s (17%) ever got rendered, dropping 49s of
+                                 # already-detected material. Coverage-ratio scales smoothly instead.
 DEFAULT_MAX_CLIPS_PER_SEGMENT = 10  # hard ceiling regardless of how long the region actually is —
                                     # keeps a single long take from dominating random selection (§16)
 
@@ -151,23 +157,23 @@ def merge_overlapping(regions):
     return [tuple(r) for r in merged]
 
 
-def split_into_windows(start_time, end_time, seconds_per_clip, max_clips_per_segment):
+def split_into_windows(start_time, end_time, target_coverage, max_clips_per_segment):
     """Split one detected active region into 1+ clip-length (start, end) windows.
 
     A region no longer than MAX_CLIP_SECONDS just becomes one window. A
-    longer region — a long continuous take — gets roughly one window per
-    `seconds_per_clip` of its length, evenly spread across it, capped at
-    `max_clips_per_segment` regardless of how long the region actually is.
-    The cap matters: without it, one long take could contribute far more
-    segments than any other file, dominating random selection (§16) even
-    with file-first selection, since it'd still win "which segment within
-    this file" disproportionately.
+    longer region — a long continuous take — gets enough windows to cover
+    roughly `target_coverage` of its length, evenly spread across it,
+    capped at `max_clips_per_segment` regardless of how long the region
+    actually is. The cap matters: without it, one long take could
+    contribute far more segments than any other file, dominating random
+    selection (§16) even with file-first selection, since it'd still win
+    "which segment within this file" disproportionately.
     """
     duration = end_time - start_time
     if duration <= MAX_CLIP_SECONDS:
         return [(start_time, end_time)]
 
-    n = min(max_clips_per_segment, max(1, math.ceil(duration / seconds_per_clip)))
+    n = min(max_clips_per_segment, max(1, math.ceil(duration * target_coverage / MAX_CLIP_SECONDS)))
     if n == 1:
         return [(start_time, start_time + MAX_CLIP_SECONDS)]
 
@@ -179,7 +185,7 @@ def split_into_windows(start_time, end_time, seconds_per_clip, max_clips_per_seg
 
 
 def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_after,
-                     seconds_per_clip=DEFAULT_SECONDS_PER_CLIP,
+                     target_coverage=DEFAULT_TARGET_COVERAGE,
                      max_clips_per_segment=DEFAULT_MAX_CLIPS_PER_SEGMENT):
     """Returns (list of segment dicts, error_message_or_None).
 
@@ -217,7 +223,7 @@ def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_a
     segments = []
     for region_start, region_end in final_regions:
         for start_time, end_time in split_into_windows(region_start, region_end,
-                                                         seconds_per_clip, max_clips_per_segment):
+                                                         target_coverage, max_clips_per_segment):
             start_idx = int(start_time / window_seconds)
             end_idx = min(len(envelope), int(math.ceil(end_time / window_seconds)))
             region_windows = envelope[start_idx:end_idx] or [(0.0, 0.0)]
@@ -272,8 +278,8 @@ def main():
     parser.add_argument("--merge-gap", type=float, default=DEFAULT_MERGE_GAP)
     parser.add_argument("--pad-before", type=float, default=DEFAULT_PAD_BEFORE)
     parser.add_argument("--pad-after", type=float, default=DEFAULT_PAD_AFTER)
-    parser.add_argument("--seconds-per-clip", type=float, default=DEFAULT_SECONDS_PER_CLIP,
-                         help="One ~10s clip per this many seconds of a long active region.")
+    parser.add_argument("--target-coverage", type=float, default=DEFAULT_TARGET_COVERAGE,
+                         help="Aim to cover this fraction of a long active region across its windows.")
     parser.add_argument("--max-clips-per-segment", type=int, default=DEFAULT_MAX_CLIPS_PER_SEGMENT,
                          help="Hard ceiling regardless of how long the region is (fairness, §16).")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
@@ -303,7 +309,7 @@ def main():
             pool.submit(
                 detect_segments, row["path"], row["duration"], args.threshold, args.merge_gap,
                 args.pad_before, args.pad_after,
-                seconds_per_clip=args.seconds_per_clip,
+                target_coverage=args.target_coverage,
                 max_clips_per_segment=args.max_clips_per_segment,
             ): row
             for row in rows
