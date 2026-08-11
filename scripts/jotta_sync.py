@@ -261,8 +261,11 @@ def main():
         pending[entry["Path"]] = (tmp_dir, entry)
 
     # Phase 2: poll until every queued download has actually finished.
+    # Deadline scales with batch size — a fixed 10 minutes is fine for
+    # dozens of files but not thousands (found the hard way: a 5,807-file
+    # batch needs much longer than a 68-file one).
     print(f"Waiting for {len(pending)} download(s) to finish ...")
-    deadline = time.monotonic() + 600  # 10 min backstop, not an expected duration
+    deadline = time.monotonic() + max(600, len(pending) * 3)
     while pending and time.monotonic() < deadline:
         result = subprocess.run(
             ["jotta-cli", "list", "downloads", "--json"],
@@ -277,12 +280,19 @@ def main():
                 if pending_status == "error":
                     print(f"  ! download error for {remote}: {status['Errors']}", file=sys.stderr)
                     continue
-                finalize_download(conn, dest_root, tmp_dir, entry)
+                # One malformed entry must never take down the whole batch —
+                # found the hard way when a missing "Modified" field crashed
+                # a 5,807-file run partway through, leaving thousands of
+                # already-downloaded files stuck unfinalized.
+                try:
+                    finalize_download(conn, dest_root, tmp_dir, entry)
+                except Exception as exc:
+                    print(f"  ! finalize failed for {remote}: {exc!r}", file=sys.stderr)
         if pending:
             time.sleep(2)
 
     if pending:
-        print(f"  ! {len(pending)} download(s) still not finished after 10 minutes, giving up on them:",
+        print(f"  ! {len(pending)} download(s) still not finished after the deadline, giving up on them:",
               file=sys.stderr)
         for remote in pending:
             print(f"    - {remote}", file=sys.stderr)
@@ -311,6 +321,13 @@ def finalize_download(conn, dest_root, tmp_dir, entry):
     downloaded.rename(local_path)
     tmp_dir.rmdir()
 
+    # Modified is normally always present, but a run against a 5,807-file
+    # batch hit one entry missing it (transient — a re-walk afterward
+    # couldn't reproduce it). Fall back to Created, then to "now", rather
+    # than crash — and specifically not to 0 (epoch 1970), which would
+    # poison the modified_time-based auto year-tag (§3.5) with a bogus year.
+    modified_ms = entry.get("Modified") or entry.get("Created") or int(time.time() * 1000)
+
     conn.execute(
         """
         INSERT OR IGNORE INTO files
@@ -322,7 +339,7 @@ def finalize_download(conn, dest_root, tmp_dir, entry):
             entry["Name"],
             Path(entry["Name"]).suffix.lower(),
             entry.get("Size", 0),
-            entry["Modified"] // 1000,  # ms -> s
+            modified_ms // 1000,  # ms -> s
             entry["Path"],
             int(time.time()),
         ),
