@@ -7,10 +7,15 @@ reduced resolution, compute an RMS envelope over fixed-duration windows
 (NOT a fixed window count — see §7, this matters for long files), smooth
 it, threshold it, merge nearby active runs, drop very-short ones (with a
 per-file dynamic minimum, §9, so short one-shots aren't rejected), pad
-the survivors, and merge any overlaps padding created. Insert one row per
-final segment. A file with zero surviving segments still gets
-segmented_at set (§7) — it's "processed, nothing found", not
-indistinguishable from "not yet analyzed".
+the survivors, and merge any overlaps padding created. A region no
+longer than one compiled clip (10s) becomes one segment row; a longer
+one (a long continuous take) is split into multiple clip-length windows
+spread across it — roughly one per --seconds-per-clip, capped at
+--max-clips-per-segment regardless of how long the take actually is, so
+one long recording can't dominate random selection (§16) the way it
+would if it produced hundreds of windows. A file with zero surviving
+segments still gets segmented_at set (§7) — it's "processed, nothing
+found", not indistinguishable from "not yet analyzed".
 
 No numpy dependency (not installed on the target server, and the
 workload's small enough that pure-Python + the stdlib `array` module is
@@ -30,11 +35,13 @@ import subprocess
 import sys
 import time
 from array import array
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import db
 from archive_util import extract_year
 
 ANALYSIS_VERSION = 1
+DEFAULT_WORKERS = 3  # conservative start on a small 4-core box running other services too
 
 DECODE_SAMPLE_RATE = 8000  # Hz — plenty for an activity envelope, cheap to decode/loop over
 WINDOW_MS = 200
@@ -43,7 +50,10 @@ DEFAULT_MERGE_GAP = 1.5  # seconds; §9 default range is 1-2s
 DEFAULT_MIN_SEGMENT = 3.0  # seconds; §9 default, clamped per-file to file duration
 DEFAULT_PAD_BEFORE = 1.0
 DEFAULT_PAD_AFTER = 2.0
-MAX_CLIP_SECONDS = 10.0  # §8a — segments longer than this get capped at render time, not here
+MAX_CLIP_SECONDS = 10.0  # §8a — each rendered clip is at most this long
+DEFAULT_SECONDS_PER_CLIP = 60.0  # one ~10s clip per this many seconds of a long active region
+DEFAULT_MAX_CLIPS_PER_SEGMENT = 10  # hard ceiling regardless of how long the region actually is —
+                                    # keeps a single long take from dominating random selection (§16)
 
 CLOUD_PROJECT_RE = re.compile(r"/Musikkprosjekter/([^/]+)/", re.IGNORECASE)
 
@@ -141,7 +151,36 @@ def merge_overlapping(regions):
     return [tuple(r) for r in merged]
 
 
-def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_after):
+def split_into_windows(start_time, end_time, seconds_per_clip, max_clips_per_segment):
+    """Split one detected active region into 1+ clip-length (start, end) windows.
+
+    A region no longer than MAX_CLIP_SECONDS just becomes one window. A
+    longer region — a long continuous take — gets roughly one window per
+    `seconds_per_clip` of its length, evenly spread across it, capped at
+    `max_clips_per_segment` regardless of how long the region actually is.
+    The cap matters: without it, one long take could contribute far more
+    segments than any other file, dominating random selection (§16) even
+    with file-first selection, since it'd still win "which segment within
+    this file" disproportionately.
+    """
+    duration = end_time - start_time
+    if duration <= MAX_CLIP_SECONDS:
+        return [(start_time, end_time)]
+
+    n = min(max_clips_per_segment, max(1, math.ceil(duration / seconds_per_clip)))
+    if n == 1:
+        return [(start_time, start_time + MAX_CLIP_SECONDS)]
+
+    span = duration - MAX_CLIP_SECONDS  # room to slide the window start across the region
+    return [
+        (start_time + span * i / (n - 1), start_time + span * i / (n - 1) + MAX_CLIP_SECONDS)
+        for i in range(n)
+    ]
+
+
+def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_after,
+                     seconds_per_clip=DEFAULT_SECONDS_PER_CLIP,
+                     max_clips_per_segment=DEFAULT_MAX_CLIPS_PER_SEGMENT):
     """Returns (list of segment dicts, error_message_or_None).
 
     Each segment dict: start_time, end_time, duration, mean_rms, peak.
@@ -176,19 +215,21 @@ def detect_segments(path, file_duration, threshold, merge_gap, pad_before, pad_a
     final_regions = merge_overlapping(padded_regions)
 
     segments = []
-    for start_time, end_time in final_regions:
-        start_idx = int(start_time / window_seconds)
-        end_idx = min(len(envelope), int(math.ceil(end_time / window_seconds)))
-        region_windows = envelope[start_idx:end_idx] or [(0.0, 0.0)]
-        mean_rms = sum(r for r, _ in region_windows) / len(region_windows)
-        peak = max(p for _, p in region_windows)
-        segments.append({
-            "start_time": start_time,
-            "end_time": end_time,
-            "duration": end_time - start_time,
-            "mean_rms": mean_rms,
-            "peak": peak,
-        })
+    for region_start, region_end in final_regions:
+        for start_time, end_time in split_into_windows(region_start, region_end,
+                                                         seconds_per_clip, max_clips_per_segment):
+            start_idx = int(start_time / window_seconds)
+            end_idx = min(len(envelope), int(math.ceil(end_time / window_seconds)))
+            region_windows = envelope[start_idx:end_idx] or [(0.0, 0.0)]
+            mean_rms = sum(r for r, _ in region_windows) / len(region_windows)
+            peak = max(p for _, p in region_windows)
+            segments.append({
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration": end_time - start_time,
+                "mean_rms": mean_rms,
+                "peak": peak,
+            })
     return segments, None
 
 
@@ -228,6 +269,13 @@ def main():
     parser.add_argument("--merge-gap", type=float, default=DEFAULT_MERGE_GAP)
     parser.add_argument("--pad-before", type=float, default=DEFAULT_PAD_BEFORE)
     parser.add_argument("--pad-after", type=float, default=DEFAULT_PAD_AFTER)
+    parser.add_argument("--seconds-per-clip", type=float, default=DEFAULT_SECONDS_PER_CLIP,
+                         help="One ~10s clip per this many seconds of a long active region.")
+    parser.add_argument("--max-clips-per-segment", type=int, default=DEFAULT_MAX_CLIPS_PER_SEGMENT,
+                         help="Hard ceiling regardless of how long the region is (fairness, §16).")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                         help="Concurrent ffmpeg decodes. Each file's decode is one subprocess "
+                              "call, worth parallelizing, but kept conservative by default.")
     args = parser.parse_args()
 
     conn = db.init_db(args.db)
@@ -244,36 +292,48 @@ def main():
     files_with_zero = 0
     errors = 0
 
-    for row in rows:
-        segments, error = detect_segments(
-            row["path"], row["duration"], args.threshold, args.merge_gap,
-            args.pad_before, args.pad_after,
-        )
-        if error:
-            print(f"  ! {row['filename']}: ffmpeg decode error: {error}", file=sys.stderr)
-            errors += 1
-            continue
+    # detect_segments() (ffmpeg decode + pure-Python envelope math) runs
+    # concurrently across files; all DB writes happen back here in the main
+    # thread only, so there's never more than one writer touching sqlite.
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        future_to_row = {
+            pool.submit(
+                detect_segments, row["path"], row["duration"], args.threshold, args.merge_gap,
+                args.pad_before, args.pad_after,
+                seconds_per_clip=args.seconds_per_clip,
+                max_clips_per_segment=args.max_clips_per_segment,
+            ): row
+            for row in rows
+        }
 
-        year = year_for_file(row)
-        for seg in segments:
-            cur = conn.execute(
-                """
-                INSERT INTO segments (file_id, start_time, end_time, duration, mean_rms, peak)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (row["id"], seg["start_time"], seg["end_time"], seg["duration"],
-                 seg["mean_rms"], seg["peak"]),
-            )
-            tag_segment_with_year(conn, cur.lastrowid, year)
+        for future in as_completed(future_to_row):
+            row = future_to_row[future]
+            segments, error = future.result()
+            if error:
+                print(f"  ! {row['filename']}: ffmpeg decode error: {error}", file=sys.stderr)
+                errors += 1
+                continue
 
-        conn.execute("UPDATE files SET segmented_at = ? WHERE id = ?", (int(time.time()), row["id"]))
-        conn.commit()
+            year = year_for_file(row)
+            for seg in segments:
+                cur = conn.execute(
+                    """
+                    INSERT INTO segments (file_id, start_time, end_time, duration, mean_rms, peak)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (row["id"], seg["start_time"], seg["end_time"], seg["duration"],
+                     seg["mean_rms"], seg["peak"]),
+                )
+                tag_segment_with_year(conn, cur.lastrowid, year)
 
-        total_segments += len(segments)
-        if not segments:
-            files_with_zero += 1
-        print(f"  {row['filename']}: {len(segments)} segment(s)"
-              + ("".join(f" [{s['start_time']:.1f}-{s['end_time']:.1f}s]" for s in segments) if segments else " (none found)"))
+            conn.execute("UPDATE files SET segmented_at = ? WHERE id = ?", (int(time.time()), row["id"]))
+            conn.commit()
+
+            total_segments += len(segments)
+            if not segments:
+                files_with_zero += 1
+            print(f"  {row['filename']}: {len(segments)} segment(s)"
+                  + ("".join(f" [{s['start_time']:.1f}-{s['end_time']:.1f}s]" for s in segments) if segments else " (none found)"))
 
     print()
     print(f"Analyzed {len(rows)} file(s): {total_segments} segment(s) total, "

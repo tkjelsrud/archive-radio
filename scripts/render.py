@@ -16,12 +16,14 @@ import argparse
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import db
 
 CLIP_SAMPLE_RATE = 22050
 MAX_CLIP_SECONDS = 10.0
+DEFAULT_WORKERS = 3  # conservative start on a small 4-core box running other services too
 
 
 def render_clip(source_path, start_time, duration, dest_path):
@@ -40,10 +42,21 @@ def render_clip(source_path, start_time, duration, dest_path):
     return clip_duration, None
 
 
+def render_one(row, cache_root):
+    """Worker-thread body: mkdir + one ffmpeg call, no DB access."""
+    shard_dir = cache_root / str(row["file_id"])
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = shard_dir / f"{row['segment_id']}.wav"
+    clip_duration, error = render_clip(row["source_path"], row["start_time"], row["duration"], dest_path)
+    return dest_path, clip_duration, error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(db.DEFAULT_DB_PATH))
     parser.add_argument("--clip-cache", default=str(Path(db.DEFAULT_DB_PATH).parent / "clip-cache"))
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                         help="Concurrent ffmpeg renders. Kept conservative by default.")
     args = parser.parse_args()
 
     conn = db.init_db(args.db)
@@ -61,28 +74,30 @@ def main():
     errors = 0
     cache_root = Path(args.clip_cache)
 
-    for row in rows:
-        shard_dir = cache_root / str(row["file_id"])
-        shard_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = shard_dir / f"{row['segment_id']}.wav"
+    # ffmpeg calls run concurrently in worker threads; every DB write stays
+    # in the main thread so only one connection ever writes at a time.
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        future_to_row = {pool.submit(render_one, row, cache_root): row for row in rows}
 
-        clip_duration, error = render_clip(row["source_path"], row["start_time"], row["duration"], dest_path)
-        if error:
-            print(f"  ! segment {row['segment_id']} (file {row['file_id']}): {error}", file=sys.stderr)
-            errors += 1
-            continue
+        for future in as_completed(future_to_row):
+            row = future_to_row[future]
+            dest_path, clip_duration, error = future.result()
+            if error:
+                print(f"  ! segment {row['segment_id']} (file {row['file_id']}): {error}", file=sys.stderr)
+                errors += 1
+                continue
 
-        conn.execute(
-            """
-            UPDATE segments
-            SET rendered_path = ?, rendered_duration = ?, rendered_sample_rate = ?
-            WHERE id = ?
-            """,
-            (str(dest_path.resolve()), clip_duration, CLIP_SAMPLE_RATE, row["segment_id"]),
-        )
-        conn.commit()
-        rendered += 1
-        print(f"  segment {row['segment_id']}: {clip_duration:.1f}s -> {dest_path}")
+            conn.execute(
+                """
+                UPDATE segments
+                SET rendered_path = ?, rendered_duration = ?, rendered_sample_rate = ?
+                WHERE id = ?
+                """,
+                (str(dest_path.resolve()), clip_duration, CLIP_SAMPLE_RATE, row["segment_id"]),
+            )
+            conn.commit()
+            rendered += 1
+            print(f"  segment {row['segment_id']}: {clip_duration:.1f}s -> {dest_path}")
 
     print()
     print(f"Rendered {rendered} clip(s), {errors} error(s), out of {len(rows)} pending.")
