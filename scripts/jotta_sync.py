@@ -14,20 +14,17 @@ never calls archive/sync/add or anything else that mutates the cloud side.
 import argparse
 import hashlib
 import json
-import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import db
+from archive_util import extract_year, PLAUSIBLE_YEAR_RANGE
 
 ARCHIVE_ROOT = "Archive/Musikkprosjekter"
-PLAUSIBLE_YEAR_RANGE = (2000, 2030)
 AUDIO_EXTENSIONS = {".wav", ".aif", ".aiff"}
 DEFAULT_MIN_SIZE = 100_000  # bytes; §5a default, tunable
-
-YEAR_PREFIX_RE = re.compile(r"^(\d{4})")
 
 
 def local_filename_for(cloud_path):
@@ -61,23 +58,6 @@ def jotta_ls(path):
     if not result.stdout.strip():
         return {}
     return json.loads(result.stdout)
-
-
-def extract_year(folder_name):
-    """Return a plausible 4-digit year prefix from a folder name, or None.
-
-    Only the leading digits matter (§5a) — everything after is free text
-    in this archive and deliberately not parsed. A match outside
-    PLAUSIBLE_YEAR_RANGE (e.g. a typo like "2926-6 Camera Angle") is
-    treated as no match, not a bogus batch.
-    """
-    match = YEAR_PREFIX_RE.match(folder_name)
-    if not match:
-        return None
-    year = int(match.group(1))
-    if PLAUSIBLE_YEAR_RANGE[0] <= year <= PLAUSIBLE_YEAR_RANGE[1]:
-        return year
-    return None
 
 
 def is_audio_file(name, size, min_size):

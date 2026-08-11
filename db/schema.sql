@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS files (
     cloud_path        TEXT,
     synced_at         INTEGER,
     indexed_at        INTEGER,
+    segmented_at      INTEGER,  -- activity analysis (§7) has run; distinct from indexed_at so a file
+                                -- analyzed-with-zero-segments-found is still visibly "processed", not
+                                -- indistinguishable from "not yet analyzed" (§7's zero-segment rule)
     created_at        INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
