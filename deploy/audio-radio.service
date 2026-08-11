@@ -1,0 +1,13 @@
+[Unit]
+Description=Personal Audio Archive Radio web player
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tkjelsrud/audio-radio
+ExecStart=/home/tkjelsrud/audio-radio/.venv/bin/python /home/tkjelsrud/audio-radio/scripts/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

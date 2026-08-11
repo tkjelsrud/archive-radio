@@ -183,13 +183,17 @@ def main():
         folder_files = 0
         folder_bytes = 0
         for entry in walk_project_folder(folder["Path"]):
-            if not is_audio_file(entry["Name"], entry["Size"], args.min_size):
+            # jotta-cli omits "Size" entirely for zero-byte files (Go's
+            # omitempty), rather than reporting 0 — .get() naturally makes
+            # such a file fail the min-size check below, no special case needed.
+            size = entry.get("Size", 0)
+            if not is_audio_file(entry["Name"], size, args.min_size):
                 continue
             if entry["Path"] in already_synced:
                 skipped_already_synced += 1
                 continue
             folder_files += 1
-            folder_bytes += entry["Size"]
+            folder_bytes += size
             to_download.append(entry)
         total_files += folder_files
         total_bytes += folder_bytes
@@ -295,7 +299,7 @@ def finalize_download(conn, dest_root, tmp_dir, entry):
             str(local_path.resolve()),
             entry["Name"],
             Path(entry["Name"]).suffix.lower(),
-            entry["Size"],
+            entry.get("Size", 0),
             entry["Modified"] // 1000,  # ms -> s
             entry["Path"],
             int(time.time()),

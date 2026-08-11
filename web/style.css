@@ -1,0 +1,231 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+}
+
+.logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  filter: grayscale(1) brightness(1.6);
+  opacity: 0.9;
+}
+
+.art-slot {
+  width: 220px;
+  height: 220px;
+  border-radius: 8px;
+  background: #111;
+  border: 1px solid #262626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #333;
+  letter-spacing: 0.3em;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.art-slot:hover {
+  border-color: #444;
+}
+
+.meta {
+  text-align: center;
+  min-height: 40px;
+}
+
+.filename {
+  font-size: 14px;
+  color: #ccc;
+  word-break: break-word;
+}
+
+.location {
+  font-size: 11px;
+  color: #666;
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.transport {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+
+.transport button {
+  background: none;
+  border: 1px solid #333;
+  color: #eee;
+  border-radius: 50%;
+  width: 56px;
+  height: 56px;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.transport button:hover {
+  border-color: #666;
+}
+
+#btnPlay {
+  width: 72px;
+  height: 72px;
+  font-size: 26px;
+}
+
+.status {
+  font-size: 12px;
+  color: #555;
+  text-align: center;
+  min-height: 16px;
+}
+
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.detail-overlay.hidden {
+  display: none;
+}
+
+.detail-panel {
+  width: 100%;
+  max-width: 360px;
+  background: #0a0a0a;
+  border: 1px solid #262626;
+  border-radius: 10px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #888;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.loop-indicator {
+  color: #4a9;
+  font-size: 11px;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.tag-chip.auto {
+  border-style: dashed;
+  color: #888;
+}
+
+.tag-chip button {
+  background: none;
+  border: none;
+  color: #777;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.tag-input-row input,
+textarea {
+  width: 100%;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #eee;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.detail-actions {
+  flex-direction: row;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.detail-actions button {
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: none;
+  color: #eee;
+  padding: 10px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.not-usable-btn {
+  color: #c66;
+  border-color: #422;
+}
+
+.not-usable-btn.active {
+  background: #c66;
+  color: #000;
+  border-color: #c66;
+}
+
+.done-btn {
+  color: #9c9;
+  border-color: #242;
+}

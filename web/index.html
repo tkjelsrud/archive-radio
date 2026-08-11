@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Personal Audio Archive Radio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="player">
+    <img class="logo" src="/badger-studio.png" alt="Badger Studio">
+
+    <div class="art-slot" id="artSlot" title="Click to inspect/tag this clip">RADIO</div>
+
+    <div class="meta">
+      <div id="sourceFilename" class="filename">—</div>
+      <div id="sourceLocation" class="location">—</div>
+    </div>
+
+    <div class="transport">
+      <button id="btnPrev" title="Skip Back">⏮</button>
+      <button id="btnPlay" title="Play/Pause">▶</button>
+      <button id="btnNext" title="Skip Ahead">⏭</button>
+    </div>
+
+    <div id="status" class="status">Press play</div>
+  </div>
+
+  <div id="detailOverlay" class="detail-overlay hidden">
+    <div class="detail-panel">
+      <div class="detail-header">
+        <span>Clip Detail</span>
+        <span id="detailLoopIndicator" class="loop-indicator">looping</span>
+      </div>
+
+      <div id="detailFilename" class="filename">—</div>
+
+      <div class="detail-section">
+        <div class="detail-label">Tags</div>
+        <div id="tagChips" class="tag-chips"></div>
+        <div class="tag-input-row">
+          <input id="tagInput" type="text" placeholder="add tag, Enter to confirm" list="tagSuggestions">
+          <datalist id="tagSuggestions"></datalist>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-label">Note</div>
+        <textarea id="noteInput" rows="2" placeholder="optional note"></textarea>
+      </div>
+
+      <div class="detail-section detail-actions">
+        <button id="btnNotUsable" class="not-usable-btn">Not usable</button>
+        <button id="btnDetailDone" class="done-btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/player.js"></script>
+</body>
+</html>

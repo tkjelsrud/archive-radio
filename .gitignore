@@ -9,3 +9,7 @@ clip-cache/
 *.db
 *.db-journal
 .env
+logs/
+
+# generated fresh before each deploy from `git log`, not source
+web/changelog.txt
