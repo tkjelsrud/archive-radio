@@ -21,7 +21,11 @@ Endpoints:
   DELETE /api/segment/{id}/tags/{tag_name}  -> remove that tag from the segment
   POST   /api/segment/{id}/note             -> body {note}
 
-  GET  /log  -> pipeline processing log + recent git commits (operational visibility)
+  GET  /log     -> pipeline processing log + recent git commits (operational visibility)
+  GET  /status  -> processed-so-far stats (live from archive.db) alongside real full-archive
+                   totals (cached from scripts/archive_stats.py — not recomputed per request,
+                   that's a few hundred jotta-cli calls). Numbers shown are always real,
+                   never a projection of what the full archive *might* eventually contain.
 
 Selection is file-first, then segment-within-file (§16): picking uniformly across
 all segments would let one dense source file dominate playback. The immediately
@@ -32,8 +36,10 @@ garbage, a bad render — not a subjective taste rating), and is excluded from
 selection entirely.
 """
 
+import datetime
 import hashlib
 import html
+import json
 import random
 import time
 from pathlib import Path
@@ -338,6 +344,63 @@ def log_page():
   <pre>{changelog}</pre>
   <h2>Pipeline activity (jotta_sync / scan / analyze / render)</h2>
   <pre>{pipeline_log}</pre>
+</body></html>"""
+    return HTMLResponse(page, headers=NO_CACHE)
+
+
+def gib(num_bytes):
+    return f"{num_bytes / 1_073_741_824:.2f} GiB"
+
+
+@app.get("/status", response_class=HTMLResponse)
+def status_page():
+    conn = db.connect()
+    files_indexed = conn.execute("SELECT COUNT(*) AS n FROM files WHERE indexed_at IS NOT NULL").fetchone()["n"]
+    segments_total = conn.execute("SELECT COUNT(*) AS n FROM segments").fetchone()["n"]
+    segments_available = conn.execute(
+        "SELECT COUNT(*) AS n FROM segments WHERE rendered_path IS NOT NULL AND rating != -1"
+    ).fetchone()["n"]
+    total_hours = (conn.execute("SELECT COALESCE(SUM(duration), 0) AS s FROM segments").fetchone()["s"] or 0) / 3600
+    touched = conn.execute("SELECT COUNT(*) AS n FROM segments WHERE touched_at IS NOT NULL").fetchone()["n"]
+    not_usable = conn.execute("SELECT COUNT(*) AS n FROM segments WHERE rating = -1").fetchone()["n"]
+
+    totals_path = LOGS_DIR / "archive_totals.json"
+    if totals_path.exists():
+        totals = json.loads(totals_path.read_text())
+        scanned_at = datetime.datetime.fromtimestamp(totals["scanned_at"], tz=datetime.timezone.utc)
+        full_archive_html = f"""
+        <div class="stat"><span>{totals['total_files']:,}</span> files total ({gib(totals['total_bytes'])})</div>
+        <div class="stat"><span>{totals['audio_files']:,}</span> match the WAV/AIFF filter ({gib(totals['audio_bytes'])})</div>
+        <div class="note">Measured {scanned_at:%Y-%m-%d} via scripts/archive_stats.py — a real inventory, not a projection.</div>
+        """
+    else:
+        full_archive_html = '<div class="note">Run scripts/archive_stats.py to measure the full archive.</div>'
+
+    page = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Notoms Archive Radio — Status</title>
+<style>
+  body {{ background:#000; color:#ddd; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          padding:32px; max-width:640px; margin:0 auto; }}
+  h1 {{ font-size:15px; letter-spacing:0.15em; color:#888; text-transform:uppercase; }}
+  h2 {{ color:#888; font-size:12px; text-transform:uppercase; letter-spacing:0.08em;
+        border-bottom:1px solid #262626; padding-bottom:8px; margin-top:36px; }}
+  .stat {{ font-size:15px; color:#ccc; margin:6px 0; }}
+  .stat span {{ color:#eee; font-weight:600; }}
+  .note {{ font-size:12px; color:#666; margin-top:10px; }}
+  a {{ color:#6cf; }}
+</style></head>
+<body>
+  <p><a href="/">&larr; back to player</a></p>
+  <h1>Notoms Archive Radio</h1>
+
+  <h2>Processed so far</h2>
+  <div class="stat"><span>{files_indexed:,}</span> source files scanned</div>
+  <div class="stat"><span>{segments_total:,}</span> segments detected ({segments_available:,} currently playable)</div>
+  <div class="stat"><span>{total_hours:.1f}</span> hours of segment audio</div>
+  <div class="stat"><span>{touched:,}</span> clips touched/favorited, <span>{not_usable:,}</span> marked not usable</div>
+
+  <h2>Full archive (Jottacloud, not yet processed)</h2>
+  {full_archive_html}
 </body></html>"""
     return HTMLResponse(page, headers=NO_CACHE)
 

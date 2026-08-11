@@ -55,9 +55,15 @@ def jotta_ls(path):
     )
     if result.returncode != 0:
         raise RuntimeError(f"jotta-cli ls '{path}' failed: {result.stderr.strip()}")
-    if not result.stdout.strip():
+    stdout = result.stdout.strip()
+    if not stdout or stdout == "nothing found":
+        # jotta-cli prints this literal text instead of valid JSON for a
+        # genuinely empty folder, even with --json — not an error.
         return {}
-    return json.loads(result.stdout)
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"jotta-cli ls '{path}' returned non-JSON output: {stdout[:200]!r}") from exc
 
 
 def is_audio_file(name, size, min_size):
