@@ -371,7 +371,7 @@ def status_page():
         full_archive_html = f"""
         <div class="stat"><span>{totals['total_files']:,}</span> files total ({gib(totals['total_bytes'])})</div>
         <div class="stat"><span>{totals['audio_files']:,}</span> match the WAV/AIFF filter ({gib(totals['audio_bytes'])})</div>
-        <div class="note">Measured {scanned_at:%Y-%m-%d} via scripts/archive_stats.py — a real inventory, not a projection.</div>
+        <div class="note">Measured {scanned_at:%Y-%m-%d} via scripts/archive_stats.py.</div>
         """
     else:
         full_archive_html = '<div class="note">Run scripts/archive_stats.py to measure the full archive.</div>'
