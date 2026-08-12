@@ -15,8 +15,7 @@ const btnPlay = document.getElementById('btnPlay');
 const btnNext = document.getElementById('btnNext');
 const btnPrev = document.getElementById('btnPrev');
 const statusEl = document.getElementById('status');
-const filenameEl = document.getElementById('sourceFilename');
-const locationEl = document.getElementById('sourceLocation');
+const counterEl = document.getElementById('clipCounter');
 const waveformCanvas = document.getElementById('waveform');
 const waveformCtx = waveformCanvas.getContext('2d');
 const artPlaceholderEl = document.getElementById('artPlaceholder');
@@ -108,9 +107,8 @@ function startPreload(seq) {
 }
 
 function updateMeta(item) {
-  filenameEl.textContent = item.source_filename;
-  locationEl.textContent = item.source_location;
-  statusEl.textContent = `${item.sequence_number + 1}/${item.total_available}`;
+  counterEl.textContent = `${item.sequence_number + 1}/${item.total_available}`;
+  statusEl.textContent = '';
 }
 
 // Approximate waveform (DESIGN.md §13's "even if just an option" ask): the
@@ -316,6 +314,7 @@ document.addEventListener('keydown', (e) => {
 const artSlot = document.getElementById('artSlot');
 const detailOverlay = document.getElementById('detailOverlay');
 const detailFilenameEl = document.getElementById('detailFilename');
+const detailLocationEl = document.getElementById('detailLocation');
 const tagChipsEl = document.getElementById('tagChips');
 const tagInputEl = document.getElementById('tagInput');
 const tagSuggestionsEl = document.getElementById('tagSuggestions');
@@ -368,6 +367,7 @@ async function openDetail() {
   detailFileId = current.item.file_id;
 
   detailFilenameEl.textContent = current.item.source_filename;
+  detailLocationEl.textContent = current.item.source_location;
   tagInputEl.value = '';
   noteInputEl.value = '';
   btnDownloadClip.href = current.item.clip_url;

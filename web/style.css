@@ -74,6 +74,12 @@ html, body {
   word-break: break-word;
 }
 
+.counter {
+  font-size: 13px;
+  color: #666;
+  letter-spacing: 0.05em;
+}
+
 .transport {
   display: flex;
   gap: 24px;
